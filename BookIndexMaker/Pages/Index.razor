@@ -1,0 +1,151 @@
+﻿@page "/"
+@using System.IO;
+@using System.Diagnostics;
+@using Blazor.FileReader;
+@inject IFileReaderService fileReaderService;
+
+<h1>Book Index Maker</h1>
+
+Welcome to <b>Book Index Maker</b>, which you can use to create a back of the book index for your book from a PDF document.
+<br />
+<br />
+
+Lets get started!
+<br />
+<br />
+
+First, Enter a name for this Project<br />
+<input type="text" width="200" @ref=projectName />
+<br />
+<br />
+
+Second, Select a PDF document that you want to process for all words...
+<br />
+
+<input type="file" @ref=inputElement />
+<button @onclick=ReadFile>Upload and Process</button>
+
+<div style="visibility:@FileInfoDiv">
+    @FileInfoText
+    <b>Status</b>: @UploadStatus
+</div>
+
+<br />
+<br />
+<progress max="@max" value="@value" style="visibility:@ShowProgressBar" />
+
+@code {
+
+    [Parameter]
+    public int BufferSize { get; set; } = 2220480;
+    public long max;
+    public long value;
+    ElementReference inputElement;
+    ElementReference projectName;
+
+    string Output { get; set; }
+    string FileInfoDiv { get; set; } = "hidden";
+    string ShowProgressBar { get; set; } = "hidden";
+    MarkupString FileInfoText { get; set; }
+    MarkupString UploadStatus { get; set; }
+
+    public async Task ClearFile()
+    {
+        await fileReaderService.CreateReference(inputElement).ClearValue();
+    }
+
+    public async Task ReadFile()
+    {
+        max = 0;
+        value = 0;
+        Output = string.Empty;
+        FileInfoText = new MarkupString("");
+        UploadStatus = new MarkupString("");
+
+        this.StateHasChanged();
+        var nl = Environment.NewLine;
+        var br = "<br>";
+        var files = (await fileReaderService.CreateReference(inputElement).EnumerateFilesAsync()).ToList();
+
+        foreach (var file in files)
+        {
+            max += (await file.ReadFileInfoAsync()).Size;
+        }
+        foreach (var file in files)
+        {
+            var stopwatch = new Stopwatch();
+            stopwatch.Start();
+
+            string fit = "";
+            var fileInfo = await file.ReadFileInfoAsync();
+            FileInfoDiv = "visible";
+            ShowProgressBar = "visible";
+            fit += $"<b>Filename</b>: {fileInfo.Name}{br}";
+            fit += $"<b>Size</b>: {fileInfo.Size}{br}";
+            fit += $"<b>Type</b>: {fileInfo.Type}{br}";
+            fit += $"<b>Last Modified Date</b>: {fileInfo.LastModifiedDate?.ToString() ?? "(N/A)"}{br}";
+
+            FileInfoText = new MarkupString(fit);
+
+            UploadStatus = new MarkupString($"Reading file...");
+            this.StateHasChanged();
+            Console.WriteLine(Output);
+
+            if (fileInfo.Type.ToLower().Contains("pdf"))
+            {
+                using (var fs = await file.OpenReadAsync())
+                {
+                    var buffer = new byte[BufferSize];
+                    int count;
+                    var lastAnnounce = 0m;
+                    while ((count = await fs.ReadAsync(buffer, 0, buffer.Length)) != 0)
+                    {
+                        value += count;
+                        var progress = ((decimal)fs.Position * 100) / fs.Length;
+                        if (progress > (lastAnnounce + 10))
+                        {
+                            stopwatch.Stop();
+                            UploadStatus = new MarkupString($"Read {count} bytes ({progress:00}%). {fs.Position} / {fs.Length}{nl}");
+                            this.StateHasChanged();
+                            lastAnnounce = progress;
+                            stopwatch.Start();
+                        }
+                    }
+
+                    ShowProgressBar = "hidden";
+                    UploadStatus = new MarkupString($"Reading File...{nl}");
+                    this.StateHasChanged();
+
+                    IndexProject ip = new IndexProject();
+                    MemoryStream ms = await file.CreateMemoryStreamAsync(14096);
+
+                    UploadStatus = new MarkupString($"Processing File Pages...{nl}");
+                    this.StateHasChanged();
+                    bool processed = await ip.ProcessIt(ms, IndexProject.DocumentTypes.PDF, false, true);
+
+                    stopwatch.Stop();
+
+                    if (processed)
+                    {
+                        UploadStatus = new MarkupString($"Complete in {stopwatch.ElapsedMilliseconds}ms! {ip.PagesInBook.Count()} pages were processed, accumulating {ip.GetWordList().Count()} distinct words...{nl}");
+                    }
+                    else
+                    {
+                        UploadStatus = new MarkupString($"Oops! Something went wrong. Please verify that the file is a valid PDF document.");
+                    }
+
+
+                }
+            }
+            else
+            {
+                UploadStatus = new MarkupString($"Oops! The file must be a PDF document. Please select a different file.");
+            }
+            this.StateHasChanged();
+        }
+
+    }
+}
+
+
+
